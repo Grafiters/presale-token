@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "deployTestnet": "npx hardhat run scripts/deploy.js --network tbeone"
   },
   "keywords": [],
   "author": "",
@@ -12,8 +13,13 @@
   "devDependencies": {
     "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "@nomicfoundation/hardhat-verify": "^2.0.12",
+    "@nomiclabs/hardhat-ethers": "^2.0.3",
     "chai": "^4.5.0",
-    "ethers": "^6.13.5",
-    "hardhat": "^2.22.18"
+    "ethers": "^5.5.2",
+    "hardhat": "^2.7.0"
+  },
+  "dependencies": {
+    "@nomiclabs/hardhat-waffle": "^2.0.6",
+    "hardhat-verify": "^1.0.0"
   }
 }

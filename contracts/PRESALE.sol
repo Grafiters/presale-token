@@ -1,9 +1,6 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.22;
 
-/**
- * @title Interface ERC20 (IERC20)
- */
 interface IERC20 {
     function totalSupply() external view returns (uint256);
     function balanceOf(address account) external view returns (uint256);
@@ -16,10 +13,6 @@ interface IERC20 {
     event Approval(address indexed owner, address indexed spender, uint256 value);
 }
 
-
-/**
- * @title SafeERC20 (Menghindari kesalahan transfer token)
- */
 library SafeERC20 {
     function safeTransfer(IERC20 token, address to, uint256 amount) internal {
         require(token.transfer(to, amount), "SafeERC20: Transfer failed");
@@ -30,229 +23,260 @@ library SafeERC20 {
     }
 }
 
-/**
- * @title Ownable (Hanya Owner yang bisa akses fungsi tertentu)
- */
-contract Ownable {
-    address private _owner;
+interface IPancakeRouter {
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
 
-    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
-
-    constructor() {
-        _owner = msg.sender;
-        emit OwnershipTransferred(address(0), msg.sender);
-    }
-
-    function owner() public view returns (address) {
-        return _owner;
-    }
-
-    modifier onlyOwner() {
-        require(_owner == msg.sender, "Ownable: Caller is not the owner");
-        _;
-    }
-
-    function transferOwnership(address newOwner) public onlyOwner {
-        require(newOwner != address(0), "Ownable: New owner is the zero address");
-        _owner = newOwner;
-        emit OwnershipTransferred(msg.sender, newOwner);
-    }
+    function addLiquidityETH(
+        address token,
+        uint256 amountTokenDesired,
+        uint256 amountTokenMin,
+        uint256 amountETHMin,
+        address to,
+        uint256 deadline
+    ) external payable;
 }
 
-/**
- * @title Launchpad DEX (Standalone)
- */
+interface IPancakeFactory {
+    function getPair(address tokenA, address tokenB) external view returns (address pair);
+}
 
-contract LaunchpadDEX {
+
+contract PresaleContract {
     using SafeERC20 for IERC20;
+    
+    address public owner;
+    address public creator;
 
-    struct Presale {
-        address creator;
-        address token;
-        address paymentToken;
-        uint256 rate;
-        uint256 startTime;
-        uint256 endTime;
-        uint256 amountSold;
-        uint256 hardCap;
-        uint256 totalRaised;
-        uint256 totalClaimed;
-        bool completed;
-    }
+    address public token;
+    address public tokenHolder;
+    address public wrapped;
 
-    mapping(address => Presale) public presales;
-    address[] public projects;
+    address public router;
+    address public factory;
+    address public liquidityPair;
 
-    event PresaleCreated(address indexed creator, address indexed token, uint256 rate, uint256 startTime, uint256 endTime);
+    uint256 public startTime;
+    uint256 public endTime;
+
+    uint256 public rate;
+    uint256 public price;
+    uint256 public amountSold;
+    uint256 public totalToken;
+
+    uint256 public hardCap;
+    uint256 public softCap;
+    uint256 public totalRaised;
+    uint256 public totalClaimed;
+
+    bool public completed;
+    bool public successful;
+    mapping(address => uint256) public contributions;
+
     event TokenPurchased(address indexed buyer, uint256 amount);
     event TokensClaimed(address indexed claimer, uint256 amount);
-    event FundsWithdrawn(address indexed creator, uint256 amount);
-    event UnsoldTokensWithdrawn(address indexed creator, uint256 amount);
-    event PresaleEnded(address indexed token);
+    event PresaleEnded(bool successful);
+    event RefundClaimed(address indexed buyer, uint256 amount);
+    event Initialized(address token, uint256 rate, uint256 price, uint256 startTime, uint256 endTime, uint256 totalToken, uint256 hardCap, uint256 softCap);
+    event MultiTransferCompleted(address[] recipients, uint256[] amounts);
+    event TokensTransferred(address indexed from, address indexed to, uint256 amount);
+    event FundsForwarded(address indexed from, address indexed tokenHolder, uint256 amount);
+    event LiquidityTransferred(address indexed from, address indexed to, uint256 amount);
+    event TokensSwapped(uint256 tokenAmount, uint256 ethReceived);
+    event LiquidityAdded(uint256 tokenAmount, uint256 ethAmount, address liquidityPair);
 
-    modifier presaleExists(address _token) {
-        require(presales[_token].token != address(0), "Presale does not exist");
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner can perform this action");
         _;
     }
 
-    modifier onlyCreator(address _token) {
-        require(presales[_token].creator == msg.sender, "Only presale creator can perform this action");
-        _;
+    constructor(address _creator, address _tokenHolder, address _router, address _factory, address _wrapped) {
+        owner = msg.sender;
+        creator = _creator;
+        tokenHolder = _tokenHolder;
+        router = _router;
+        factory = _factory;
+        wrapped = _wrapped;
     }
 
-    modifier onlyActivePresale(address _token) {
-        Presale storage presale = presales[_token];
-        require(block.timestamp >= presale.startTime, "Presale not started");
-        require(block.timestamp <= presale.endTime, "Presale ended");
-        _;
-    }
-
-    function createPresale(
-        address _token, 
-        address _paymentToken, 
-        uint256 _rate, 
-        uint256 _startTime, 
-        uint256 _endTime, 
-        uint256 _hardCap
+    function initialize(
+        address _token,
+        uint256 _rate,
+        uint256 _price,
+        uint256 _startTime,
+        uint256 _endTime,
+        uint256 _totalToken,
+        uint256 _hardCap,
+        uint256 _softCap
     ) external {
-        require(_endTime > _startTime, "End time must be after start time");
-        require(presales[_token].token == address(0), "Presale already exists");
+        require(_softCap <= _hardCap, "SoftCap must be less than or equal to HardCap");
+        require(_token != address(0), "Invalid token address");
 
-        presales[_token] = Presale({
-            creator: msg.sender,
-            token: _token,
-            paymentToken: _paymentToken,
-            rate: _rate,
-            startTime: _startTime,
-            endTime: _endTime,
-            amountSold: 0,
-            hardCap: _hardCap,
-            totalRaised: 0,
-            totalClaimed: 0,
-            completed: false
-        });
+        IERC20 erc20 = IERC20(_token);
+        uint256 balance = erc20.balanceOf(creator);
+        require(balance > totalToken, "Creator does not have enough token balance");
 
-        projects.push(_token);
-        emit PresaleCreated(msg.sender, _token, _rate, _startTime, _endTime);
+        token = _token;
+        rate = _rate;
+        price = _price;
+        startTime = _startTime;
+        endTime = _endTime;
+        totalToken = _totalToken;
+        hardCap = _hardCap;
+        softCap = _softCap;
+
+        liquidityPair = IPancakeFactory(factory).getPair(token, wrapped);
+
+        emit Initialized(_token, _rate, _price, _startTime, _endTime, _totalToken, _hardCap, _softCap);
+
+        // Transfer tokens from creator to the token holder
+        erc20.transferFrom(creator, tokenHolder, _totalToken);
+
+        emit TokensTransferred(creator, tokenHolder, _totalToken);
     }
 
-    function buyToken(address _token, uint256 _amount) 
-        external 
-        presaleExists(_token) 
-        onlyActivePresale(_token) 
-    {
-        Presale storage presale = presales[_token];
-        require(presale.amountSold + _amount <= presale.hardCap, "Hard cap reached");
+    function calculateTokens(uint256 ethAmount) public view returns (uint256) {
+        return (ethAmount * rate) / price;
+    }
 
-        uint256 tokensToBuy = _amount * presale.rate;
+    function getOwner() external view returns (address) {
+        return owner;
+    }
 
-        IERC20(presale.paymentToken).safeTransferFrom(msg.sender, address(this), _amount);
+    function buyToken() external payable {
+        require(block.timestamp >= startTime && block.timestamp <= endTime, "Presale not active");
+        require(amountSold + msg.value <= hardCap, "Hard cap reached");
+        require(msg.value >= price, "Insufficient ETH sent");
+        
+        uint256 tokensToBuy = calculateTokens(msg.value);
+        contributions[msg.sender] += msg.value;
+        amountSold += msg.value;
+        totalRaised += msg.value;
+        
+        (bool success, ) = tokenHolder.call{value: msg.value}("");
+        require(success, "Transfer to tokenHolder failed");
 
-        presale.amountSold += _amount;
-        presale.totalRaised += _amount;
-
+        emit FundsForwarded(msg.sender, tokenHolder, msg.value);
         emit TokenPurchased(msg.sender, tokensToBuy);
     }
 
-    function claimTokens(address _token) 
-        external 
-        presaleExists(_token) 
-    {
-        Presale storage presale = presales[_token];
-        require(block.timestamp > presale.endTime, "Presale not ended");
-        require(presale.completed, "Creator has not ended presale");
-
-        uint256 amount = presale.amountSold;
+    function claimTokens() external {
+        require(block.timestamp > endTime, "Presale not ended yet");
+        require(completed, "Presale not finalized");
+        require(successful, "Presale did not reach softCap");
+        
+        uint256 amount = calculateTokens(contributions[msg.sender]);
         require(amount > 0, "No tokens to claim");
-
-        presale.totalClaimed += amount;
-
-        IERC20(_token).safeTransfer(msg.sender, amount);
-
+        
+        contributions[msg.sender] = 0;
+        totalClaimed += amount;
+        IERC20(token).transferFrom(tokenHolder, msg.sender, amount);
+        
         emit TokensClaimed(msg.sender, amount);
     }
 
-    function endPresale(address _token) 
-        external 
-        onlyCreator(_token) 
-        presaleExists(_token) 
-    {
-        Presale storage presale = presales[_token];
-        require(block.timestamp > presale.endTime, "Presale not ended yet");
-        require(!presale.completed, "Presale already ended");
-
-        presale.completed = true;
-
-        emit PresaleEnded(_token);
+    function claimRefund() external {
+        require(block.timestamp > endTime, "Presale not ended yet");
+        require(completed, "Presale not finalized");
+        require(!successful, "Presale reached softCap, no refunds");
+        
+        uint256 amount = contributions[msg.sender];
+        require(amount > 0, "No funds to refund");
+        
+        contributions[msg.sender] = 0;
+        (bool success, ) = payable(msg.sender).call{value: amount}("");
+        require(success, "Refund transfer failed");
+        
+        emit RefundClaimed(msg.sender, amount);
     }
 
-    function withdrawFunds(address _token) 
-        external 
-        onlyCreator(_token) 
-        presaleExists(_token) 
-    {
-        Presale storage presale = presales[_token];
-        require(presale.completed, "Presale must be ended first");
+    function endPresale() external onlyOwner {
+        require(block.timestamp > endTime, "Presale not ended yet");
+        require(!completed, "Presale already ended");
+        
+        completed = true;
+        successful = totalRaised >= softCap && totalRaised <= hardCap;
 
-        uint256 amount = presale.totalRaised;
-        require(amount > 0, "No funds to withdraw");
-
-        presale.totalRaised = 0;
-        IERC20(presale.paymentToken).safeTransfer(msg.sender, amount);
-
-        emit FundsWithdrawn(msg.sender, amount);
+        emit PresaleEnded(successful);
     }
 
-    function withdrawUnsoldTokens(address _token)
-        external 
-        onlyCreator(_token) 
-        presaleExists(_token) 
-    {
-        Presale storage presale = presales[_token];
-        require(presale.completed, "Presale must be ended first");
+    function multiTransfer(address[] calldata recipients, uint256[] calldata amounts) external onlyOwner {
+        require(recipients.length == amounts.length, "Invalid input arrays");
 
-        uint256 unsoldTokens = (presale.hardCap * presale.rate) - presale.totalClaimed;
-        require(unsoldTokens > 0, "No unsold tokens");
-
-        IERC20(_token).safeTransfer(msg.sender, unsoldTokens);
-
-        emit UnsoldTokensWithdrawn(msg.sender, unsoldTokens);
-    }
-
-    function getPresale(uint256 tokenId) external view returns (Presale memory) {
-        uint256 length = projects.length;
-        Presale[] memory allPresales = new Presale[](length);
-        return allPresales[tokenId];
-    }
-
-    function getAmountRate(address _token, uint256 _amount) external view returns (uint256) {
-        uint256 tokensToBuy = _amount * presales[_token].rate;
-        return tokensToBuy;
-    }
-
-    function getLength() external view returns (uint256) {
-        return projects.length;
-    }
-
-    function getTotalClaimed(address _token) external view returns (uint256) {
-        return presales[_token].totalClaimed;
-    }
-
-    function getTotalRaised(address _token) external view returns (uint256) {
-        return presales[_token].totalRaised;
-    }
-
-    /**
-     * @dev Mengembalikan semua data presale yang telah dibuat.
-     */
-    function getAllPresales() external view returns (Presale[] memory) {
-        uint256 length = projects.length;
-        Presale[] memory allPresales = new Presale[](length);
-
-        for (uint256 i = 0; i < length; i++) {
-            allPresales[i] = presales[projects[i]];
+        uint256 totalAmount;
+        for (uint256 i = 0; i < amounts.length; i++) {
+            totalAmount += amounts[i];
         }
+        require(IERC20(token).balanceOf(tokenHolder) >= totalAmount, "Insufficient token holder balance");
+        
+        for (uint256 i = 0; i < recipients.length; i++) {
+            IERC20(token).transferFrom(tokenHolder, recipients[i], amounts[i]);
+        }
+        
+        emit MultiTransferCompleted(recipients, amounts);
+    }
 
-        return allPresales;
+    function getLiquidityPair() public {
+        address pair = IPancakeFactory(factory).getPair(token, wrapped);
+        require(pair != address(0), "Liquidity pair does not exist");
+        liquidityPair = pair;
+    }
+
+    function addLiquidity(uint256 tokenAmount, uint256 ethAmount) private {
+        require(IERC20(token).balanceOf(tokenHolder) >= tokenAmount, "Insufficient token balance");
+        require(IERC20(token).transferFrom(tokenHolder, address(this), tokenAmount), "Token transfer failed");
+
+        IERC20(token).approve(router, tokenAmount);
+
+        IPancakeRouter(router).addLiquidityETH{value: ethAmount}(
+            token,
+            tokenAmount,
+            0,
+            0,
+            liquidityPair,
+            block.timestamp + 300
+        );
+
+        emit LiquidityAdded(tokenAmount, ethAmount, liquidityPair);
+    }
+}
+
+contract LaunchpadFactory {
+    address public owner;
+    address public holder;
+    address[] public presaleContracts;
+    address public router = 0xd627FfF27633B6704a3eF15F9d66ea24a0eb17Ee;
+    address public factory = 0x6a3e838fdf5fB908e76fB7886a22a1c7Ee0f1460;
+    address public wrapped = 0xB69Bc23b876daC67e1cE7E20322a12A664f543E6;
+
+    event PresaleCreated(address indexed presaleAddress, address indexed creator);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Only owner can perform this action");
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+        holder = msg.sender;
+    }
+
+    function createPresale(address _creator) external returns (address) {
+        PresaleContract presale = new PresaleContract(
+            _creator, holder, router, factory, wrapped
+        );
+        
+        presaleContracts.push(address(presale));
+        emit PresaleCreated(address(presale), msg.sender);
+        return address(presale);
+    }
+
+    function transferOwnership(address _newOwner) external onlyOwner {
+        require(_newOwner != address(0), "Invalid owner");
+        owner = _newOwner;
+    }
+
+    function transferHoldering(address _newHolder) external onlyOwner {
+        require(_newHolder != address(0), "Invalid Holder");
+        holder = _newHolder;
     }
 }
